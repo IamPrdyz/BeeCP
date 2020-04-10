@@ -22,7 +22,6 @@ import org.slf4j.LoggerFactory;
 import java.sql.Connection;
 import java.sql.SQLException;
 
-import static cn.beecp.pool.PoolObjectsState.CONNECTION_IDLE;
 import static cn.beecp.util.BeecpUtil.oclose;
 import static java.lang.System.currentTimeMillis;
 
@@ -44,26 +43,17 @@ class PooledConnection extends StatementCache{
 	boolean curAutoCommit;
 	private FastConnectionPool pool;
 	private static Logger log = LoggerFactory.getLogger(PooledConnection.class);
-	
+
 	//changed indicator
 	private boolean[] changedInds=new boolean[6]; //0:autoCommit,1:transactionIsolation,2:readOnly,3:catalog,4:schema,5:networkTimeout
-	private short changedBitVal=Byte.parseByte("000000",2); //pos:last ---> head;0:unchanged,1:changed
-	static short Pos_AutoCommitInd=0;
-	static short Pos_TransactionIsolationInd=1;
-	static short Pos_ReadOnlyInd=2;
-	static short Pos_CatalogInd=3;
-	static short Pos_SchemaInd=4;
-	static short Pos_NetworkTimeoutInd=5;
+	private short changedCount=0;
 
-	public PooledConnection(Connection rawConn,FastConnectionPool connPool,BeeDataSourceConfig config)throws SQLException{
-		 this(rawConn,connPool,config,CONNECTION_IDLE);
-	}
-	public PooledConnection(Connection rawConn,FastConnectionPool connPool,BeeDataSourceConfig config,int connState)throws SQLException{
+	public PooledConnection(Connection rawConn,int connState,FastConnectionPool connPool,BeeDataSourceConfig config)throws SQLException{
 		super(config.getPreparedStatementCacheSize());
 		pool=connPool;
+		state=connState;
 		this.rawConn=rawConn;
 
-		state=connState;
 		pConfig=config;
 		curAutoCommit=pConfig.isDefaultAutoCommit();
 		stmCacheValid = pConfig.getPreparedStatementCacheSize()>0;
@@ -87,8 +77,10 @@ class PooledConnection extends StatementCache{
 	//***************called by connection proxy ********//
 	void returnToPoolBySelf(){
 		proxyConn=null;
-		resetRawConnOnReturn();
-		pool.release(this,true);
+		if(resetRawConnOnReturn())
+			pool.recycle(this);
+		else
+		    pool.abandonOnReturn(this);
 	}
 	void setCurAutoCommit(boolean curAutoCommit) {
 		this.curAutoCommit = curAutoCommit;
@@ -100,117 +92,71 @@ class PooledConnection extends StatementCache{
 		commitDirtyInd=!curAutoCommit;
 		lastAccessTime=currentTimeMillis();
 	}
-	int getChangedInd(int pos){
-		return (changedBitVal >>pos)&1;
-	}
-    void setChangedInd(int pos,boolean changed){
+    void setChangedInd(short pos,boolean changed){
+		if(!changedInds[pos] && changed)//false ->true      + 1
+		   changedCount++;
+		else if(changedInds[pos] && !changed)//true-->false  -1
+		   changedCount--;
 		changedInds[pos]=changed;
-    	changedBitVal^=(changedBitVal&(1<<pos))^((changed?1:0)<<pos);
 		updateAccessTime();
     }
 
     boolean isSupportSchema() {
 		return pool.isSupportSchema();
 	}
-	boolean isSupportIsValid() {
-		return pool.isSupportIsValid();
-	}
 	boolean isSupportNetworkTimeout() {
 		return  pool.isSupportNetworkTimeout();
 	}
 	//reset connection on return to pool
-	private void resetRawConnOnReturn() {
-		if (!curAutoCommit&&commitDirtyInd){//Roll back when commit dirty
-			try {
+	private boolean updTimeInReset;
+	private boolean resetRawConnOnReturn() {
+		updTimeInReset=false;
+		try {
+			if (!curAutoCommit && commitDirtyInd) {//Roll back when commit dirty
 				rawConn.rollback();
-				updateAccessTime();
-			} catch (SQLException e) {
-				log.error("Failed to rollback on return to pool", e);
-			}finally{
-				commitDirtyInd=false;
+				commitDirtyInd = false;
+				updTimeInReset=true;
 			}
-		}
-
-		//reset begin
-		if (changedBitVal > 0) {
-			if (changedInds[0]) {//reset autoCommit
-				try {
+			//reset begin
+			if (changedCount > 0) {
+				if (changedInds[0]) {//reset autoCommit
 					rawConn.setAutoCommit(pConfig.isDefaultAutoCommit());
-					curAutoCommit=pConfig.isDefaultAutoCommit();
-					updateAccessTime();
-				} catch (SQLException e) {
-					log.error("Failed to reset autoCommit to:{}",pConfig.isDefaultAutoCommit(),e);
-				}finally{
-					changedInds[0]=false;
+					curAutoCommit = pConfig.isDefaultAutoCommit();
+                    changedInds[0] = false;
 				}
-			}
-
-			if (changedInds[1]) {
-				try {
+				if (changedInds[1]) {
 					rawConn.setTransactionIsolation(pConfig.getDefaultTransactionIsolationCode());
-					updateAccessTime();
-				} catch (SQLException e) {
-					log.error("Failed to reset transactionIsolation to:{}",pConfig.getDefaultTransactionIsolation(),e);
-				}finally {
 					changedInds[1] = false;
 				}
-			}
-
-			if (changedInds[2]) {//reset readonly
-				try {
+				if (changedInds[2]) {//reset readonly
 					rawConn.setReadOnly(pConfig.isDefaultReadOnly());
-					updateAccessTime();
-				} catch (SQLException e) {
-					log.error("Failed to reset readOnly to:{}",pConfig.isDefaultReadOnly(),e);
-				}finally{
 					changedInds[2] = false;
 				}
-			}
-
-			if (changedInds[3]) {//reset catalog
-				try {
+				if (changedInds[3]) {//reset catalog
 					rawConn.setCatalog(pConfig.getDefaultCatalog());
-					updateAccessTime();
-				} catch (SQLException e) {
-					log.error("Failed to reset catalog to:{}",pConfig.getDefaultCatalog(),e);
-				}finally{
 					changedInds[3] = false;
 				}
-			}
-			//for JDK1.7 begin
-//			if (changedInds[4]) {//reset shema
-//				try {
-//					if(isSupportSchema()) {
-//						rawConn.setSchema(pConfig.getDefaultSchema());
-//						updateAccessTime();
-//					}
-//				} catch (SQLException e) {
-//					log.error("Failed to reset schema to:{}",pConfig.getDefaultSchema(),e);
-//				}finally{
+//				//for JDK1.7 begin
+//				if (changedInds[4] && isSupportSchema()) {//reset shema
+//					rawConn.setSchema(pConfig.getDefaultSchema());
 //					changedInds[4] = false;
 //				}
-//			}
-//
-//			if (changedInds[5]) {//reset networkTimeout
-//				try {
-//					if(isSupportNetworkTimeout()) {
-//						rawConn.setNetworkTimeout(pool.getNetworkTimeoutExecutor(), pool.getNetworkTimeout());
-//						updateAccessTime();
-//					}
-//				} catch (SQLException e) {
-//					log.error("Failed to reset networkTimeout to:{}",pool.getNetworkTimeout(),e);
-//				}finally{
+//				if (changedInds[5] && isSupportNetworkTimeout()) {//reset networkTimeout
+//					rawConn.setNetworkTimeout(pool.getNetworkTimeoutExecutor(), pool.getNetworkTimeout());
 //					changedInds[5] = false;
 //				}
-//			}
-			//for JDK1.7 end
-			changedBitVal=0;
-		}//reset end
+				//for JDK1.7 end
+				changedCount=0;
+				updTimeInReset=true;
+			}//reset end
+			if(updTimeInReset)updateAccessTime();
 
-		try {//clear warnings
+			//clear warnings
 			rawConn.clearWarnings();
-		} catch (SQLException e) {
-			log.error("Failed to clear warnings",e);
+			return true;
+		} catch (Throwable e) {
+			log.error("Connection reset error", e);
+			return false;
 		}
 	}
 }

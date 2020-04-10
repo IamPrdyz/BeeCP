@@ -351,9 +351,9 @@ public final class ProxyClassGenerator {
 
 		String delegateName="delegate.";
 		if("java.sql.PreparedStatement".equals(ctStatementIntf.getName())){
-			delegateName="delegate1.";
+			delegateName="((PreparedStatement)delegate).";
 		}else if("java.sql.CallableStatement".equals(ctStatementIntf.getName())){
-			delegateName="delegate2.";
+			delegateName="((CallableStatement)delegate).";
 		}
 
 		for (CtMethod ctMethod : linkedList) {
@@ -368,7 +368,7 @@ public final class ProxyClassGenerator {
 			if (newCtMethodm.getReturnType() == CtClass.voidType) {
 				methodBuffer.append(delegateName+methodName + "($$);");
 				if(methodName.startsWith("execute"))
-					methodBuffer.append("pooledConn.updateAccessTimeWithCommitDirty();");
+					methodBuffer.append("pConn.updateAccessTimeWithCommitDirty();");
 			} else {
 				methodBuffer.append(newCtMethodm.getReturnType().getName() + " re="+delegateName+methodName + "($$);");
 				if(methodName.startsWith("execute"))methodBuffer.append("pConn.updateAccessTimeWithCommitDirty();");

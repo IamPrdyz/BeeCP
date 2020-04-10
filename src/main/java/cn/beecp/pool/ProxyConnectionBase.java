@@ -15,13 +15,13 @@
  */
 package cn.beecp.pool;
 
-import static cn.beecp.pool.PoolExceptionList.AutoCommitChangeForbiddennException;
-import static cn.beecp.pool.PoolExceptionList.ConnectionClosedException;
-import static cn.beecp.util.BeecpUtil.equalsText;
-
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Savepoint;
+
+import static cn.beecp.pool.PoolExceptionList.AutoCommitChangeForbiddennException;
+import static cn.beecp.pool.PoolExceptionList.ConnectionClosedException;
+import static cn.beecp.util.BeecpUtil.equalsText;
 /**
  * raw connection wrapper
  * 
@@ -31,7 +31,14 @@ import java.sql.Savepoint;
 abstract class ProxyConnectionBase implements Connection{
 	private boolean isClosed;
 	protected Connection delegate;
-	protected PooledConnection pConn;//called by subClsss to update time
+	protected PooledConnection pConn;//called by subclass to update time
+
+	private final static short Pos_AutoCommitInd=0;
+	private final static short Pos_TransactionIsolationInd=1;
+	private final static short Pos_ReadOnlyInd=2;
+	private final static short Pos_CatalogInd=3;
+	private final static short Pos_SchemaInd=4;
+	private final static short Pos_NetworkTimeoutInd=5;
 
 	public ProxyConnectionBase(PooledConnection pConn) {
 		this.pConn=pConn;
@@ -55,24 +62,24 @@ abstract class ProxyConnectionBase implements Connection{
 		  throw AutoCommitChangeForbiddennException;
 		
 		delegate.setAutoCommit(autoCommit);
-		pConn.setCurAutoCommit(autoCommit);
-		pConn.setChangedInd(PooledConnection.Pos_AutoCommitInd,autoCommit!=pConn.pConfig.isDefaultAutoCommit());
+		pConn.curAutoCommit = autoCommit;
+		pConn.setChangedInd(Pos_AutoCommitInd,autoCommit!=pConn.pConfig.isDefaultAutoCommit());
 		if(autoCommit)pConn.commitDirtyInd=false;
 	}
 	public void setTransactionIsolation(int level) throws SQLException {
 		checkClose();
 		delegate.setTransactionIsolation(level);
-		pConn.setChangedInd(PooledConnection.Pos_TransactionIsolationInd,level!=pConn.pConfig.getDefaultTransactionIsolationCode());
+		pConn.setChangedInd(Pos_TransactionIsolationInd,level!=pConn.pConfig.getDefaultTransactionIsolationCode());
 	}
 	public void setReadOnly(boolean readOnly) throws SQLException {
 		checkClose();
 		delegate.setReadOnly(readOnly);
-		pConn.setChangedInd(PooledConnection.Pos_ReadOnlyInd,readOnly!=pConn.pConfig.isDefaultReadOnly());
+		pConn.setChangedInd(Pos_ReadOnlyInd,readOnly!=pConn.pConfig.isDefaultReadOnly());
 	}
 	public void setCatalog(String catalog) throws SQLException {
 		checkClose();
 		delegate.setCatalog(catalog);
-		pConn.setChangedInd(PooledConnection.Pos_CatalogInd,!equalsText(catalog, pConn.pConfig.getDefaultCatalog()));
+		pConn.setChangedInd(Pos_CatalogInd,!equalsText(catalog, pConn.pConfig.getDefaultCatalog()));
 	}
 	public boolean isValid(int timeout) throws SQLException {
 		checkClose();
@@ -87,7 +94,7 @@ abstract class ProxyConnectionBase implements Connection{
 //		checkClose();
 //		if (pConn.isSupportSchema()){
 //			delegate.setSchema(schema);
-//			pConn.setChangedInd(PooledConnection.Pos_SchemaInd, !equalsText(schema, pConn.pConfig.getDefaultSchema()));
+//			pConn.setChangedInd(Pos_SchemaInd, !equalsText(schema, pConn.pConfig.getDefaultSchema()));
 //		}else{
 //			throw PoolExceptionList.FeatureNotSupportedException;
 //		}
@@ -117,7 +124,7 @@ abstract class ProxyConnectionBase implements Connection{
 //		checkClose();
 //		if (pConn.isSupportNetworkTimeout()) {
 //			delegate.setNetworkTimeout(executor, milliseconds);
-//			pConn.setChangedInd(PooledConnection.Pos_NetworkTimeoutInd, true);
+//			pConn.setChangedInd(Pos_NetworkTimeoutInd, true);
 //		}else{
 //			throw PoolExceptionList.FeatureNotSupportedException;
 //		}
